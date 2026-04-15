@@ -1,6 +1,6 @@
 # astrbot_plugin_lottery_modes
 
-_✨ 抽奖插件（增强版：支持即时/定时抽奖 + CRON 自动开奖）✨_  
+_✨ 新抽奖插件（增强版：支持即时/定时抽奖 + CRON 自动开奖）✨_  
 
 </div>
 
@@ -10,7 +10,7 @@ _✨ 抽奖插件（增强版：支持即时/定时抽奖 + CRON 自动开奖）
 - **即时模式**：用户发送“抽”立即开奖，即开即中。
 - **定时模式**：用户先报名，管理员可设置 **CRON 表达式** 实现自动开奖，也可手动开奖；开奖时按奖项等级顺序从报名者中随机抽取（每人最多中一奖），开奖后活动结束。
 
-> 本插件基于 [astrbot_plugin_lottery](https://github.com/Zhalslar/astrbot_plugin_lottery) 进行二次开发，定时调度功能参考了 [astrbot_plugin_reminder](https://github.com/Foolllll-J/astrbot_plugin_reminder) 的实现思路。感谢两位原作者的贡献！
+> 本插件基于 [astrbot_plugin_lottery](https://github.com/Zhalslar/astrbot_plugin_lottery) 进行二次开发，定时调度功能参考了 [astrbot_plugin_reminder](https://github.com/Foolllll-J/astrbot_plugin_reminder) 的实现思路。感谢两位原作者！
 
 ## 📦 安装
 
