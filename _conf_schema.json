@@ -11,11 +11,6 @@
                     "probability": {
                         "description": "中奖概率",
                         "type": "float",
-                        "slider": {
-                            "min": 0,
-                            "max": 1,
-                            "step": 0.001
-                        },
                         "default": 0.005
                     },
                     "name": {
@@ -26,11 +21,6 @@
                     "count": {
                         "description": "奖品数量",
                         "type": "int",
-                        "slider": {
-                            "min": 0,
-                            "max": 10,
-                            "step": 1
-                        },
                         "default": 1
                     }
                 }
@@ -42,11 +32,6 @@
                     "probability": {
                         "description": "中奖概率",
                         "type": "float",
-                        "slider": {
-                            "min": 0,
-                            "max": 1,
-                            "step": 0.001
-                        },
                         "default": 0.015
                     },
                     "name": {
@@ -57,11 +42,6 @@
                     "count": {
                         "description": "奖品数量",
                         "type": "int",
-                        "slider": {
-                            "min": 0,
-                            "max": 1,
-                            "step": 1
-                        },
                         "default": 3
                     }
                 }
@@ -73,11 +53,6 @@
                     "probability": {
                         "description": "中奖概率",
                         "type": "float",
-                        "slider": {
-                            "min": 0,
-                            "max": 1,
-                            "step": 0.001
-                        },
                         "default": 0.04
                     },
                     "name": {
@@ -88,11 +63,6 @@
                     "count": {
                         "description": "奖品数量",
                         "type": "int",
-                        "slider": {
-                            "min": 0,
-                            "max": 100,
-                            "step": 1
-                        },
                         "default": 5
                     }
                 }
@@ -104,11 +74,6 @@
                     "probability": {
                         "description": "中奖概率",
                         "type": "float",
-                        "slider": {
-                            "min": 0,
-                            "max": 1,
-                            "step": 0.001
-                        },
                         "default": 0.1
                     },
                     "name": {
@@ -119,11 +84,6 @@
                     "count": {
                         "description": "奖品数量",
                         "type": "int",
-                        "slider": {
-                            "min": 0,
-                            "max": 100,
-                            "step": 1
-                        },
                         "default": 10
                     }
                 }
@@ -135,11 +95,6 @@
                     "probability": {
                         "description": "中奖概率",
                         "type": "float",
-                        "slider": {
-                            "min": 0,
-                            "max": 1,
-                            "step": 0.001
-                        },
                         "default": 0.84
                     },
                     "name": {
@@ -150,15 +105,16 @@
                     "count": {
                         "description": "奖品数量",
                         "type": "int",
-                        "slider": {
-                            "min": 0,
-                            "max": 1000,
-                            "step": 1
-                        },
                         "default": 200
                     }
                 }
             }
         }
+    },
+    "lottery_mode": {
+        "description": "抽奖模式：instant-即开即中，scheduled-定时开奖",
+        "type": "string",
+        "enum": ["instant", "scheduled"],
+        "default": "instant"
     }
 }
