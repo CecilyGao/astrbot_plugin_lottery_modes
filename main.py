@@ -1,67 +1,229 @@
-# 在 __init__ 中添加回调
-self.manager.send_group_message_callback = self._send_group_message
+from astrbot.api.star import Context, Star, register
+from astrbot.core.config.astrbot_config import AstrBotConfig
+from astrbot.api import logger
+from astrbot.api.event import filter, MessageChain
+from astrbot.api.message_components import Plain
+from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.star.star_tools import StarTools
+from .utils import get_nickname
+from .core.lottery import LotteryManager, LotteryPersistence, PrizeLevel
+import re
 
-async def _send_group_message(self, group_id: str, message: str):
-    """发送群消息（用于自动开奖）"""
-    try:
-        # 构造 session_id
-        platform_id = "aiocqhttp"  # 实际应从配置或事件中获取，这里简化
-        # 实际应该从活动对象中获取原始平台信息，但为了演示，我们假设
-        # 更好的做法是在 start_activity 时记录平台信息
-        session_id = f"{platform_id}:GroupMessage:{group_id}"
-        await self.context.send_message(session_id, MessageChain([Plain(message)]))
-    except Exception as e:
-        logger.error(f"[Lottery] 发送自动开奖结果失败: {e}")
 
-# 新增命令
-@filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
-@filter.permission_type(filter.PermissionType.ADMIN)
-@filter.command("设置开奖cron")
-async def set_draw_cron(self, event: AstrMessageEvent):
-    """设置自动开奖 CRON 表达式（仅定时模式）"""
-    parts = event.message_str.strip().split(maxsplit=1)
-    if len(parts) < 2:
-        yield event.plain_result("用法：设置开奖cron <cron表达式>，例如：设置开奖cron 0 12 * * *")
-        return
-    cron_expr = parts[1].strip()
-    ok, msg = self.manager.set_cron(event.get_group_id(), cron_expr)
-    yield event.plain_result(msg)
+@register("astrbot_plugin_lottery", "Zhalslar", "群聊抽奖插件（支持即时/定时+CRON自动开奖）", "1.2.0")
+class LotteryPlugin(Star):
+    def __init__(self, context: Context, config: AstrBotConfig):
+        super().__init__(context)
+        self.context = context
+        self.config = config
+        self.lottery_data_file = (
+            StarTools.get_data_dir("astrbot_plugin_lottery") / "lottery_data.json"
+        )
+        self.persistence = LotteryPersistence(str(self.lottery_data_file))
+        self.manager = LotteryManager(self.persistence, config)
 
-@filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
-@filter.permission_type(filter.PermissionType.ADMIN)
-@filter.command("取消开奖cron")
-async def cancel_draw_cron(self, event: AstrMessageEvent):
-    """取消自动开奖"""
-    ok, msg = self.manager.cancel_cron(event.get_group_id())
-    yield event.plain_result(msg)
+        # 注入发送群消息的回调，供自动开奖使用
+        self.manager.send_group_message_callback = self._send_group_message
 
-# 修改已有的抽奖状态命令，增加 cron 显示
-@filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
-@filter.command("抽奖状态")
-async def lottery_status(self, event: AstrMessageEvent):
-    data = self.manager.get_status_and_winners(event.get_group_id())
-    if not data:
-        yield event.plain_result("当前群聊没有抽奖活动")
-        return
-    ov = data["overview"]
-    mode_name = "即时开奖" if ov["mode"] == "instant" else "定时开奖"
-    status = "进行中" if ov["active"] else "已结束"
-    if ov["mode"] == "scheduled" and ov["active"] and not ov["is_drawn"]:
-        status = "报名中"
-    lines = [
-        f"📊 本群抽奖活动 [{mode_name}] {status}",
-        f"参与 {ov['participants']} 人　中奖 {ov['winners']} 人",
-    ]
-    if ov["mode"] == "scheduled" and ov["active"] and not ov["is_drawn"]:
-        if ov.get("cron_expr"):
-            lines.append(f"⏰ 自动开奖 CRON: {ov['cron_expr']}")
+    async def _send_group_message(self, group_id: str, message: str):
+        """发送群消息（用于自动开奖）"""
+        try:
+            # 注意：这里需要根据实际平台构造 session_id
+            # 由于活动对象中没有保存平台信息，我们通过当前活动对象反查平台ID
+            # 简化方案：从任意一个活动对象中获取 platform_id（所有活动同平台）
+            if self.manager.activities:
+                # 取第一个活动的 group_id 中提取平台（格式 aiocqhttp:GroupMessage:123456）
+                for gid, act in self.manager.activities.items():
+                    if gid == group_id:
+                        # 这里无法直接获取，我们构造一个通用的 session_id
+                        # 实际部署时请确保平台适配器名称正确（通常为 aiocqhttp）
+                        # 我们假设使用的是 aiocqhttp 平台
+                        session_id = f"aiocqhttp:GroupMessage:{group_id}"
+                        break
+                else:
+                    session_id = f"aiocqhttp:GroupMessage:{group_id}"
+            else:
+                session_id = f"aiocqhttp:GroupMessage:{group_id}"
+            await self.context.send_message(session_id, MessageChain([Plain(message)]))
+        except Exception as e:
+            logger.error(f"[Lottery] 发送自动开奖结果失败: {e}")
+
+    # ======================== 原有命令 ========================
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("开启抽奖")
+    async def start_lottery(self, event: AstrMessageEvent):
+        """开启抽奖活动，可选模式：开启抽奖 [即时/定时]"""
+        msg_str = event.message_str.strip()
+        mode = None
+        if "定时" in msg_str:
+            mode = "scheduled"
+        elif "即时" in msg_str:
+            mode = "instant"
+        ok, msg = self.manager.start_activity(event.get_group_id(), mode)
+        yield event.plain_result(msg)
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.command("抽")
+    async def draw_lottery(self, event: AstrMessageEvent):
+        """参与抽奖（即时模式立即开奖，定时模式报名）"""
+        group_id = event.get_group_id()
+        user_id = event.get_sender_id()
+        nickname = await get_nickname(event, user_id)
+        msg, prize_level = self.manager.draw_lottery(group_id, user_id, nickname)
+
+        if prize_level is None:
+            yield event.plain_result(msg)
+            return
+        activity = self.manager.activities.get(group_id)
+        if not activity or prize_level not in activity.prize_config:
+            yield event.plain_result(msg)
+            return
+        prize_name = activity.prize_config[prize_level]["name"]
+        yield event.plain_result(f"{prize_level.emoji} {msg}: {prize_name}")
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("设置奖项")
+    async def set_prize(self, event: AstrMessageEvent):
+        """设置当前活动的奖项
+        用法：设置奖项 <奖项等级> <概率> <数量>
+        """
+        m = re.match(
+            r"设置奖项\s+(特等奖|一等奖|二等奖|三等奖)\s+(\d*\.?\d+)\s+(\d+)",
+            event.message_str,
+        )
+        if not m:
+            yield event.plain_result("格式错误\n正确示例：设置奖项 特等奖 0.01 1")
+            return
+
+        prize_name, prob, count = m.group(1), float(m.group(2)), int(m.group(3))
+        if not (0 <= prob <= 1) or count <= 0:
+            yield event.plain_result("概率须在 0-1 之间，数量须为正整数")
+            return
+
+        lvl = PrizeLevel.from_name(prize_name)
+        if not lvl:
+            yield event.plain_result(f"未知的奖项等级：{prize_name}")
+            return
+
+        ok = self.manager.set_prize_config(event.get_group_id(), lvl, prob, count)
+        if not ok:
+            yield event.plain_result("当前群没有进行中的抽奖活动")
+            return
+
+        yield event.plain_result(
+            f"{lvl.emoji} 已设置 {prize_name}：\n"
+            f"中奖概率：{prob * 100:.1f} %\n"
+            f"奖品数量：{count} 个"
+        )
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("关闭抽奖")
+    async def stop_lottery(self, event: AstrMessageEvent):
+        """关闭抽奖活动"""
+        _, msg = self.manager.stop_activity(event.get_group_id())
+        yield event.plain_result(msg)
+
+    @filter.command("重置抽奖")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def reset_lottery(self, event: AstrMessageEvent):
+        ok = self.manager.delete_activity(event.get_group_id())
+        yield event.plain_result("本群抽奖已清空，可重新开启" if ok else "当前无抽奖可重置")
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.command("抽奖状态")
+    async def lottery_status(self, event: AstrMessageEvent):
+        data = self.manager.get_status_and_winners(event.get_group_id())
+        if not data:
+            yield event.plain_result("当前群聊没有抽奖活动")
+            return
+
+        ov = data["overview"]
+        mode_name = "即时开奖" if ov["mode"] == "instant" else "定时开奖"
+        status = "进行中" if ov["active"] else "已结束"
+        if ov["mode"] == "scheduled" and ov["active"] and not ov["is_drawn"]:
+            status = "报名中"
+        lines = [
+            f"📊 本群抽奖活动 [{mode_name}] {status}",
+            f"参与 {ov['participants']} 人　中奖 {ov['winners']} 人",
+        ]
+        if ov["mode"] == "scheduled" and ov["active"] and not ov["is_drawn"]:
+            if ov.get("cron_expr"):
+                lines.append(f"⏰ 自动开奖 CRON: {ov['cron_expr']}")
+            else:
+                lines.append("💡 使用“设置开奖cron <表达式>”设置自动开奖，或“开奖”立即开奖")
+        lines.append("🎁 奖品剩余：")
+        lines += [f"{p['name']}：{p['remaining']}/{p['total']}" for p in data["prize_left"]]
+        yield event.plain_result("\n".join(lines))
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.command("中奖名单")
+    async def winner_list(self, event: AstrMessageEvent):
+        group_id = event.get_group_id()
+        activity = self.manager.activities.get(group_id)
+        if not activity:
+            yield event.plain_result("当前群聊没有抽奖活动")
+            return
+        data = self.manager.get_status_and_winners(group_id)
+        if not data or not data["winners_by_lvl"]:
+            yield event.plain_result("暂无中奖者" if data else "当前群聊没有抽奖活动")
+            return
+
+        lines = ["🏆 中奖名单："]
+        for lvl, uids in data["winners_by_lvl"].items():
+            user_names = [activity.participants.get(uid, uid) for uid in uids]
+            lines.append(f"{lvl}：{'、'.join(user_names)}")
+        yield event.plain_result("\n".join(lines))
+
+    # ======================== 定时模式专用命令 ========================
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("设置开奖cron")
+    async def set_draw_cron(self, event: AstrMessageEvent):
+        """设置自动开奖 CRON 表达式（仅限定时模式）
+        用法：设置开奖cron <cron表达式>
+        示例：设置开奖cron 0 12 * * *   (每天中午12点)
+        """
+        parts = event.message_str.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            yield event.plain_result("用法：设置开奖cron <cron表达式>，例如：设置开奖cron 0 12 * * *")
+            return
+        cron_expr = parts[1].strip()
+        ok, msg = self.manager.set_cron(event.get_group_id(), cron_expr)
+        yield event.plain_result(msg)
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("取消开奖cron")
+    async def cancel_draw_cron(self, event: AstrMessageEvent):
+        """取消自动开奖"""
+        ok, msg = self.manager.cancel_cron(event.get_group_id())
+        yield event.plain_result(msg)
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("开奖")
+    async def draw_now(self, event: AstrMessageEvent):
+        """立即开奖（仅限定时模式）"""
+        group_id = event.get_group_id()
+        act = self.manager.activities.get(group_id)
+        if not act or not act.is_active or act.mode != "scheduled":
+            yield event.plain_result("当前群没有进行中的定时抽奖活动")
+            return
+        if act.is_drawn:
+            yield event.plain_result("已经开奖过了")
+            return
+        success, msg, _ = self.manager.perform_draw(group_id)
+        if success:
+            yield event.plain_result(msg)
         else:
-            lines.append("💡 使用“设置开奖cron <表达式>”设置自动开奖，或“开奖”立即开奖")
-    lines.append("🎁 奖品剩余：")
-    lines += [f"{p['name']}：{p['remaining']}/{p['total']}" for p in data["prize_left"]]
-    yield event.plain_result("\n".join(lines))
+            yield event.plain_result(f"开奖失败：{msg}")
 
-# 在 terminate 方法中关闭调度器
-async def terminate(self):
-    self.manager.shutdown()
-    logger.info("抽奖插件已终止")
+    async def terminate(self):
+        """插件终止时关闭调度器"""
+        self.manager.shutdown()
+        logger.info("抽奖插件已终止")
