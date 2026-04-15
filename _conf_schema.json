@@ -112,9 +112,10 @@
         }
     },
     "lottery_mode": {
-        "description": "抽奖模式：instant-即开即中，scheduled-定时开奖",
+        "description": "抽奖模式",
         "type": "string",
-        "enum": ["instant", "scheduled"],
-        "default": "instant"
+        "options": ["instant", "scheduled"],
+        "default": "instant",
+        "hint": "instant-即开即中，scheduled-定时开奖"
     }
 }
