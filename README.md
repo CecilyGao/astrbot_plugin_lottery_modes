@@ -2,11 +2,6 @@
 
 _✨ 抽奖插件（增强版：支持即时/定时抽奖 + CRON 自动开奖）✨_  
 
-[![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![AstrBot](https://img.shields.io/badge/AstrBot-4.0%2B-orange.svg)](https://github.com/Soulter/AstrBot)
-[![GitHub](https://img.shields.io/badge/作者-Zhalslar-blue)](https://github.com/Zhalslar)
-
 </div>
 
 ## 🤝 介绍
@@ -102,6 +97,3 @@ _✨ 抽奖插件（增强版：支持即时/定时抽奖 + CRON 自动开奖）
 
 - 定时模式开奖后活动自动结束，未中奖的用户无法补抽。
 - 自动开奖需要插件保持运行，重启后会自动恢复未开奖的定时任务。
-```
-
-如果您还需要将其他代码文件（如 `lottery.py`, `main.py`）也整理为 Markdown 格式的文档，请告知，我可以为您生成相应的 Markdown 代码块。
