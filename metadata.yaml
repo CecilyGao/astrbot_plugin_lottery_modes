@@ -1,7 +1,7 @@
-name: astrbot_plugin_lottery
+name: astrbot_plugin_lottery_modes
 display_name: 抽奖插件
 desc: 抽奖插件，可自定义抽奖活动的概率、奖品、奖品数量
 help: 略
-version: v1.0.4
-author: Zhalslar
-repo: https://github.com/Zhalslar/astrbot_plugin_lottery
+version: v1.0.0
+author: CecilyGao
+repo: https://github.com/CecilyGao/astrbot_plugin_lottery_modes
