@@ -2,6 +2,8 @@ import random
 from datetime import datetime
 from typing import Dict, Optional, Tuple, List
 from enum import Enum
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from astrbot.api import logger
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from .data import LotteryPersistence
@@ -40,7 +42,8 @@ class LotteryActivity:
         self.mode = mode                     # 'instant' or 'scheduled'
         self.is_active = False
         self.is_drawn = False                # 定时模式下是否已开奖
-        self.scheduled_time: Optional[str] = None  # ISO格式，仅定时模式有效
+        self.cron_expr: Optional[str] = None # 自动开奖的 CRON 表达式（仅定时模式）
+        self.job_id: Optional[str] = None    # 调度任务 ID
         self.created_at = datetime.now().isoformat()
         self.participants: dict[str, str] = {}   # user_id -> nickname
         self.winners: dict[str, str] = {}        # user_id -> prize_level
@@ -73,7 +76,8 @@ class LotteryActivity:
             "mode": self.mode,
             "is_active": self.is_active,
             "is_drawn": self.is_drawn,
-            "scheduled_time": self.scheduled_time,
+            "cron_expr": self.cron_expr,
+            "job_id": self.job_id,
             "created_at": self.created_at,
             "participants": self.participants,
             "winners": self.winners,
@@ -85,7 +89,8 @@ class LotteryActivity:
         activity = cls(data["group_id"], template, data.get("mode", "instant"))
         activity.is_active = data["is_active"]
         activity.is_drawn = data.get("is_drawn", False)
-        activity.scheduled_time = data.get("scheduled_time")
+        activity.cron_expr = data.get("cron_expr")
+        activity.job_id = data.get("job_id")
         activity.created_at = data["created_at"]
         activity.participants = data["participants"]
         activity.winners = data["winners"]
@@ -113,10 +118,103 @@ class LotteryManager:
         self.template = {PrizeLevel[k.upper()]: v for k, v in prize_config.items()}
         self.default_mode = config.get("lottery_mode", "instant")
         self.persistence = persistence
+        self.scheduler = AsyncIOScheduler()
+        self.scheduler.start()
         self.persistence.load(self)
+        self._restore_scheduled_jobs()
+
+    def _restore_scheduled_jobs(self):
+        """恢复未开奖的定时活动的 CRON 调度"""
+        for group_id, act in self.activities.items():
+            if (act.mode == "scheduled" and act.is_active and not act.is_drawn
+                    and act.cron_expr):
+                self._schedule_draw(act)
+
+    def _schedule_draw(self, activity: LotteryActivity):
+        """根据活动的 cron_expr 添加调度任务"""
+        if not activity.cron_expr or activity.mode != "scheduled":
+            return
+        # 取消旧任务
+        self._cancel_draw_job(activity)
+        # 创建新任务
+        job_id = f"lottery_draw_{activity.group_id}"
+        try:
+            trigger = CronTrigger.from_crontab(activity.cron_expr)
+            job = self.scheduler.add_job(
+                self._auto_draw,
+                trigger=trigger,
+                id=job_id,
+                args=[activity.group_id],
+                replace_existing=True,
+            )
+            activity.job_id = job_id
+            logger.info(f"[Lottery] 群 {activity.group_id} 已设置自动开奖: {activity.cron_expr}")
+        except Exception as e:
+            logger.error(f"[Lottery] 设置自动开奖失败: {e}")
+            activity.cron_expr = None
+            activity.job_id = None
+
+    def _cancel_draw_job(self, activity: LotteryActivity):
+        """取消活动的调度任务"""
+        if activity.job_id:
+            try:
+                self.scheduler.remove_job(activity.job_id)
+            except Exception:
+                pass
+            activity.job_id = None
+
+    async def _auto_draw(self, group_id: str):
+        """定时开奖的回调函数"""
+        activity = self.activities.get(group_id)
+        if not activity or not activity.is_active or activity.is_drawn:
+            return
+        logger.info(f"[Lottery] 定时开奖触发: 群 {group_id}")
+        success, msg, _ = self.perform_draw(group_id)
+        if success:
+            # 注意：这里需要发送消息到群，需要外部传入发送函数
+            # 我们通过回调属性来发送，由 main.py 注入
+            if hasattr(self, 'send_group_message_callback'):
+                await self.send_group_message_callback(group_id, msg)
+        else:
+            logger.warning(f"[Lottery] 自动开奖失败: {msg}")
+
+    def set_cron(self, group_id: str, cron_expr: str) -> Tuple[bool, str]:
+        """设置定时开奖的 CRON 表达式（仅限定时模式且活动未开奖）"""
+        activity = self.activities.get(group_id)
+        if not activity:
+            return False, "当前群没有抽奖活动"
+        if not activity.is_active:
+            return False, "抽奖活动未开启"
+        if activity.mode != "scheduled":
+            return False, "当前模式不是定时开奖模式"
+        if activity.is_drawn:
+            return False, "活动已开奖，无法修改"
+        try:
+            # 验证 CRON 表达式
+            CronTrigger.from_crontab(cron_expr)
+        except Exception as e:
+            return False, f"CRON 表达式无效: {e}"
+        activity.cron_expr = cron_expr
+        self._schedule_draw(activity)
+        self.persistence.save(self)
+        return True, f"已设置自动开奖 CRON: {cron_expr}"
+
+    def cancel_cron(self, group_id: str) -> Tuple[bool, str]:
+        """取消自动开奖"""
+        activity = self.activities.get(group_id)
+        if not activity:
+            return False, "当前群没有抽奖活动"
+        if activity.mode != "scheduled":
+            return False, "当前模式不是定时开奖模式"
+        if not activity.cron_expr:
+            return False, "未设置自动开奖"
+        self._cancel_draw_job(activity)
+        activity.cron_expr = None
+        self.persistence.save(self)
+        return True, "已取消自动开奖"
 
     def start_activity(self, group_id: str, mode: str = None) -> Tuple[bool, str]:
-        """开启抽奖活动，mode可选 'instant' 或 'scheduled'，未指定时使用默认模式"""
+        """开启抽奖活动，mode可选 'instant' 或 'scheduled'"""
         if group_id in self.activities and self.activities[group_id].is_active:
             return False, "该群已有进行中的抽奖活动"
         if mode is None:
@@ -141,14 +239,12 @@ class LotteryManager:
             return "抽奖已结束", None
 
         if activity.mode == "scheduled":
-            # 定时模式：只报名
             if activity.has_participated(user_id):
                 return "您已经报名过了", None
             activity.add_participant(user_id, nickname)
             self.persistence.save(self)
             return f"报名成功！当前共{len(activity.participants)}人参与，等待开奖", None
         else:
-            # 即时模式：原逻辑
             if activity.has_participated(user_id):
                 return "您已经参与过本次抽奖", None
             activity.add_participant(user_id, nickname)
@@ -175,7 +271,7 @@ class LotteryManager:
     def perform_draw(self, group_id: str) -> Tuple[bool, str, dict]:
         """
         执行定时开奖（按等级顺序随机抽取，每人最多中一奖）
-        返回 (是否成功, 结果消息, 中奖字典 {user_id: prize_level})
+        返回 (是否成功, 结果消息, 中奖字典)
         """
         activity = self.activities.get(group_id)
         if not activity or not activity.is_active:
@@ -189,11 +285,9 @@ class LotteryManager:
         if not participants:
             return False, "没有参与者，无法开奖", {}
 
-        # 剩余参与者列表（用于抽奖，每人最多中一个）
         remaining = participants.copy()
         winners: dict[str, PrizeLevel] = {}
 
-        # 按等级优先级从高到低抽取（SPECIAL, FIRST, SECOND, THIRD, PARTICIPATE）
         priority_order = [
             PrizeLevel.SPECIAL,
             PrizeLevel.FIRST,
@@ -213,18 +307,17 @@ class LotteryManager:
                     remaining.remove(uid)
                 cfg["remaining"] -= draw_count
 
-        # 记录中奖结果
         for uid, lvl in winners.items():
             activity.winners[uid] = lvl.value
         activity.is_drawn = True
-        activity.is_active = False  # 开奖后活动结束
+        activity.is_active = False
+        # 开奖后取消定时任务
+        self._cancel_draw_job(activity)
         self.persistence.save(self)
 
-        # 构建消息
         if not winners:
             return True, "很遗憾，没有人中奖。", {}
         lines = ["🎉 开奖结果 🎉"]
-        # 按等级分组显示
         grouped = {}
         for uid, lvl in winners.items():
             grouped.setdefault(lvl.value, []).append(uid)
@@ -240,24 +333,30 @@ class LotteryManager:
         if not activity.is_active:
             return False, "抽奖活动已经停止"
         activity.is_active = False
+        # 停止活动时取消定时任务
+        self._cancel_draw_job(activity)
         self.persistence.save(self)
         return True, "抽奖活动已停止"
 
     def delete_activity(self, group_id: str) -> bool:
         if group_id not in self.activities:
             return False
+        activity = self.activities[group_id]
+        self._cancel_draw_job(activity)
         del self.activities[group_id]
         self.persistence.save(self)
         return True
 
-    def set_scheduled_time(self, group_id: str, dt: datetime) -> bool:
-        """设置定时开奖时间（仅定时模式有效）"""
+    def set_prize_config(self, group_id: str, prize_level: PrizeLevel, probability: float, count: int) -> bool:
         activity = self.activities.get(group_id)
-        if not activity or not activity.is_active or activity.mode != "scheduled":
+        if not activity or not activity.is_active:
             return False
-        if activity.is_drawn:
-            return False
-        activity.scheduled_time = dt.isoformat()
+        activity.prize_config[prize_level] = {
+            "probability": probability,
+            "count": count,
+            "remaining": count,
+            "name": activity.prize_config[prize_level]["name"],
+        }
         self.persistence.save(self)
         return True
 
@@ -271,6 +370,7 @@ class LotteryManager:
             "is_drawn": activity.is_drawn,
             "participants": len(activity.participants),
             "winners": len(activity.winners),
+            "cron_expr": activity.cron_expr,
         }
         prize_left = [
             {
@@ -290,3 +390,8 @@ class LotteryManager:
             "prize_left": prize_left,
             "winners_by_lvl": winners_by_lvl,
         }
+
+    def shutdown(self):
+        """关闭调度器，插件终止时调用"""
+        if self.scheduler.running:
+            self.scheduler.shutdown(wait=False)
