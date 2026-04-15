@@ -25,15 +25,17 @@ class LotteryPlugin(Star):
         # 注入发送消息的回调，使用 session_origin 直接发送
         self.manager.send_group_message_callback = self._send_message_by_origin
 
-    async def _send_reply(self, event: AstrMessageEvent, msg: str):
-        """发送回复消息到当前会话（使用 context.send_message 避免自动添加 Reply）"""
+    async def _send_reply_and_stop(self, event: AstrMessageEvent, msg: str):
+        """发送回复消息并停止事件传播（避免触发 LLM）"""
         try:
             await self.context.send_message(event.unified_msg_origin, MessageChain([Plain(msg)]))
         except Exception as e:
             logger.error(f"[Lottery] 发送回复失败: {e}")
+        # 阻止消息继续流向 LLM 或其他处理器
+        event.stop_propagation()
 
     async def _send_message_by_origin(self, session_origin: str, message: str):
-        """通过 unified_msg_origin 发送消息"""
+        """通过 unified_msg_origin 发送消息（自动开奖时使用）"""
         try:
             await self.context.send_message(session_origin, MessageChain([Plain(message)]))
         except Exception as e:
@@ -52,7 +54,7 @@ class LotteryPlugin(Star):
         elif "即时" in msg_str:
             mode = "instant"
         ok, msg = self.manager.start_activity(event.get_group_id(), mode, event.unified_msg_origin)
-        await self._send_reply(event, msg)
+        await self._send_reply_and_stop(event, msg)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     @filter.command("抽")
@@ -63,14 +65,14 @@ class LotteryPlugin(Star):
         msg, prize_level = self.manager.draw_lottery(group_id, user_id, nickname)
 
         if prize_level is None:
-            await self._send_reply(event, msg)
+            await self._send_reply_and_stop(event, msg)
             return
         activity = self.manager.activities.get(group_id)
         if not activity or prize_level not in activity.prize_config:
-            await self._send_reply(event, msg)
+            await self._send_reply_and_stop(event, msg)
             return
         prize_name = activity.prize_config[prize_level]["name"]
-        await self._send_reply(event, f"{prize_level.emoji} {msg}: {prize_name}")
+        await self._send_reply_and_stop(event, f"{prize_level.emoji} {msg}: {prize_name}")
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -81,25 +83,25 @@ class LotteryPlugin(Star):
             event.message_str,
         )
         if not m:
-            await self._send_reply(event, "格式错误\n正确示例：设置奖项 特等奖 0.01 1")
+            await self._send_reply_and_stop(event, "格式错误\n正确示例：设置奖项 特等奖 0.01 1")
             return
 
         prize_name, prob, count = m.group(1), float(m.group(2)), int(m.group(3))
         if not (0 <= prob <= 1) or count <= 0:
-            await self._send_reply(event, "概率须在 0-1 之间，数量须为正整数")
+            await self._send_reply_and_stop(event, "概率须在 0-1 之间，数量须为正整数")
             return
 
         lvl = PrizeLevel.from_name(prize_name)
         if not lvl:
-            await self._send_reply(event, f"未知的奖项等级：{prize_name}")
+            await self._send_reply_and_stop(event, f"未知的奖项等级：{prize_name}")
             return
 
         ok = self.manager.set_prize_config(event.get_group_id(), lvl, prob, count)
         if not ok:
-            await self._send_reply(event, "当前群没有进行中的抽奖活动")
+            await self._send_reply_and_stop(event, "当前群没有进行中的抽奖活动")
             return
 
-        await self._send_reply(
+        await self._send_reply_and_stop(
             event,
             f"{lvl.emoji} 已设置 {prize_name}：\n"
             f"中奖概率：{prob * 100:.1f} %\n"
@@ -111,20 +113,20 @@ class LotteryPlugin(Star):
     @filter.command("关闭抽奖")
     async def stop_lottery(self, event: AstrMessageEvent):
         _, msg = self.manager.stop_activity(event.get_group_id())
-        await self._send_reply(event, msg)
+        await self._send_reply_and_stop(event, msg)
 
     @filter.command("重置抽奖")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def reset_lottery(self, event: AstrMessageEvent):
         ok = self.manager.delete_activity(event.get_group_id())
-        await self._send_reply(event, "本群抽奖已清空，可重新开启" if ok else "当前无抽奖可重置")
+        await self._send_reply_and_stop(event, "本群抽奖已清空，可重新开启" if ok else "当前无抽奖可重置")
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     @filter.command("抽奖状态")
     async def lottery_status(self, event: AstrMessageEvent):
         data = self.manager.get_status_and_winners(event.get_group_id())
         if not data:
-            await self._send_reply(event, "当前群聊没有抽奖活动")
+            await self._send_reply_and_stop(event, "当前群聊没有抽奖活动")
             return
 
         ov = data["overview"]
@@ -143,7 +145,7 @@ class LotteryPlugin(Star):
                 lines.append("💡 使用“设置开奖cron <表达式>”设置自动开奖，或“开奖”立即开奖")
         lines.append("🎁 奖品剩余：")
         lines += [f"{p['name']}：{p['remaining']}/{p['total']}" for p in data["prize_left"]]
-        await self._send_reply(event, "\n".join(lines))
+        await self._send_reply_and_stop(event, "\n".join(lines))
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     @filter.command("中奖名单")
@@ -151,18 +153,18 @@ class LotteryPlugin(Star):
         group_id = event.get_group_id()
         activity = self.manager.activities.get(group_id)
         if not activity:
-            await self._send_reply(event, "当前群聊没有抽奖活动")
+            await self._send_reply_and_stop(event, "当前群聊没有抽奖活动")
             return
         data = self.manager.get_status_and_winners(group_id)
         if not data or not data["winners_by_lvl"]:
-            await self._send_reply(event, "暂无中奖者" if data else "当前群聊没有抽奖活动")
+            await self._send_reply_and_stop(event, "暂无中奖者" if data else "当前群聊没有抽奖活动")
             return
 
         lines = ["🏆 中奖名单："]
         for lvl, uids in data["winners_by_lvl"].items():
             user_names = [activity.participants.get(uid, uid) for uid in uids]
             lines.append(f"{lvl}：{'、'.join(user_names)}")
-        await self._send_reply(event, "\n".join(lines))
+        await self._send_reply_and_stop(event, "\n".join(lines))
 
     # ======================== 定时模式专用命令 ========================
 
@@ -172,18 +174,18 @@ class LotteryPlugin(Star):
     async def set_draw_cron(self, event: AstrMessageEvent):
         parts = event.message_str.strip().split(maxsplit=1)
         if len(parts) < 2:
-            await self._send_reply(event, "用法：设置开奖cron <cron表达式>，例如：设置开奖cron 0 12 * * *")
+            await self._send_reply_and_stop(event, "用法：设置开奖cron <cron表达式>，例如：设置开奖cron 0 12 * * *")
             return
         cron_expr = parts[1].strip()
         ok, msg = self.manager.set_cron(event.get_group_id(), cron_expr)
-        await self._send_reply(event, msg)
+        await self._send_reply_and_stop(event, msg)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("取消开奖cron")
     async def cancel_draw_cron(self, event: AstrMessageEvent):
         ok, msg = self.manager.cancel_cron(event.get_group_id())
-        await self._send_reply(event, msg)
+        await self._send_reply_and_stop(event, msg)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -192,16 +194,16 @@ class LotteryPlugin(Star):
         group_id = event.get_group_id()
         act = self.manager.activities.get(group_id)
         if not act or not act.is_active or act.mode != "scheduled":
-            await self._send_reply(event, "当前群没有进行中的定时抽奖活动")
+            await self._send_reply_and_stop(event, "当前群没有进行中的定时抽奖活动")
             return
         if act.is_drawn:
-            await self._send_reply(event, "已经开奖过了")
+            await self._send_reply_and_stop(event, "已经开奖过了")
             return
         success, msg, _ = self.manager.perform_draw(group_id)
         if success:
-            await self._send_reply(event, msg)
+            await self._send_reply_and_stop(event, msg)
         else:
-            await self._send_reply(event, f"开奖失败：{msg}")
+            await self._send_reply_and_stop(event, f"开奖失败：{msg}")
 
     async def terminate(self):
         self.manager.shutdown()
