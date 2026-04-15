@@ -43,7 +43,7 @@ class LotteryPlugin(Star):
         elif "即时" in msg_str:
             mode = "instant"
         # 传入当前事件的 unified_msg_origin
-        ok, msg = self.manager.start_activity(event.get_group_id(), mode, event.unified_msg_origin)
+        ok, msg = self.manager.start_activity(event.get_group_id(), mode)
         yield event.plain_result(msg)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
