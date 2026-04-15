@@ -22,52 +22,33 @@ class LotteryPlugin(Star):
         self.persistence = LotteryPersistence(str(self.lottery_data_file))
         self.manager = LotteryManager(self.persistence, config)
 
-        # 注入发送群消息的回调，供自动开奖使用
-        self.manager.send_group_message_callback = self._send_group_message
+        # 注入发送消息的回调，使用 session_origin 直接发送
+        self.manager.send_group_message_callback = self._send_message_by_origin
 
-    async def _send_group_message(self, group_id: str, message: str):
-        """发送群消息（用于自动开奖）"""
+    async def _send_message_by_origin(self, session_origin: str, message: str):
+        """通过 unified_msg_origin 发送消息"""
         try:
-            # 注意：这里需要根据实际平台构造 session_id
-            # 由于活动对象中没有保存平台信息，我们通过当前活动对象反查平台ID
-            # 简化方案：从任意一个活动对象中获取 platform_id（所有活动同平台）
-            if self.manager.activities:
-                # 取第一个活动的 group_id 中提取平台（格式 aiocqhttp:GroupMessage:123456）
-                for gid, act in self.manager.activities.items():
-                    if gid == group_id:
-                        # 这里无法直接获取，我们构造一个通用的 session_id
-                        # 实际部署时请确保平台适配器名称正确（通常为 aiocqhttp）
-                        # 我们假设使用的是 aiocqhttp 平台
-                        session_id = f"aiocqhttp:GroupMessage:{group_id}"
-                        break
-                else:
-                    session_id = f"aiocqhttp:GroupMessage:{group_id}"
-            else:
-                session_id = f"aiocqhttp:GroupMessage:{group_id}"
-            await self.context.send_message(session_id, MessageChain([Plain(message)]))
+            await self.context.send_message(session_origin, MessageChain([Plain(message)]))
         except Exception as e:
-            logger.error(f"[Lottery] 发送自动开奖结果失败: {e}")
-
-    # ======================== 原有命令 ========================
+            logger.error(f"[Lottery] 发送消息失败 origin={session_origin}: {e}")
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启抽奖")
     async def start_lottery(self, event: AstrMessageEvent):
-        """开启抽奖活动，可选模式：开启抽奖 [即时/定时]"""
         msg_str = event.message_str.strip()
         mode = None
         if "定时" in msg_str:
             mode = "scheduled"
         elif "即时" in msg_str:
             mode = "instant"
-        ok, msg = self.manager.start_activity(event.get_group_id(), mode)
+        # 传入当前事件的 unified_msg_origin
+        ok, msg = self.manager.start_activity(event.get_group_id(), mode, event.unified_msg_origin)
         yield event.plain_result(msg)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     @filter.command("抽")
     async def draw_lottery(self, event: AstrMessageEvent):
-        """参与抽奖（即时模式立即开奖，定时模式报名）"""
         group_id = event.get_group_id()
         user_id = event.get_sender_id()
         nickname = await get_nickname(event, user_id)
@@ -87,9 +68,6 @@ class LotteryPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("设置奖项")
     async def set_prize(self, event: AstrMessageEvent):
-        """设置当前活动的奖项
-        用法：设置奖项 <奖项等级> <概率> <数量>
-        """
         m = re.match(
             r"设置奖项\s+(特等奖|一等奖|二等奖|三等奖)\s+(\d*\.?\d+)\s+(\d+)",
             event.message_str,
@@ -123,7 +101,6 @@ class LotteryPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("关闭抽奖")
     async def stop_lottery(self, event: AstrMessageEvent):
-        """关闭抽奖活动"""
         _, msg = self.manager.stop_activity(event.get_group_id())
         yield event.plain_result(msg)
 
@@ -184,10 +161,6 @@ class LotteryPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("设置开奖cron")
     async def set_draw_cron(self, event: AstrMessageEvent):
-        """设置自动开奖 CRON 表达式（仅限定时模式）
-        用法：设置开奖cron <cron表达式>
-        示例：设置开奖cron 0 12 * * *   (每天中午12点)
-        """
         parts = event.message_str.strip().split(maxsplit=1)
         if len(parts) < 2:
             yield event.plain_result("用法：设置开奖cron <cron表达式>，例如：设置开奖cron 0 12 * * *")
@@ -200,7 +173,6 @@ class LotteryPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("取消开奖cron")
     async def cancel_draw_cron(self, event: AstrMessageEvent):
-        """取消自动开奖"""
         ok, msg = self.manager.cancel_cron(event.get_group_id())
         yield event.plain_result(msg)
 
@@ -208,7 +180,6 @@ class LotteryPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开奖")
     async def draw_now(self, event: AstrMessageEvent):
-        """立即开奖（仅限定时模式）"""
         group_id = event.get_group_id()
         act = self.manager.activities.get(group_id)
         if not act or not act.is_active or act.mode != "scheduled":
@@ -224,6 +195,5 @@ class LotteryPlugin(Star):
             yield event.plain_result(f"开奖失败：{msg}")
 
     async def terminate(self):
-        """插件终止时关闭调度器"""
         self.manager.shutdown()
         logger.info("抽奖插件已终止")
