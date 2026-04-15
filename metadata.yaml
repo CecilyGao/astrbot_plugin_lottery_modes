@@ -1,6 +1,6 @@
 name: astrbot_plugin_lottery_modes
-display_name: 抽奖插件
-desc: 抽奖插件，可自定义抽奖活动的概率、奖品、奖品数量
+display_name: 新抽奖插件
+desc: 抽奖插件，可自定义抽奖活动的概率、奖品、奖品数量，相比饰乐的原插件增加了定时开奖功能
 help: 略
 version: v1.0.0
 author: CecilyGao
